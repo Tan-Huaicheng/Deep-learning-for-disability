@@ -1,0 +1,618 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## library
+
+```{r, message=FALSE}
+#options("repos"= c(CRAN="https://mirrors.tuna.tsinghua.edu.cn/CRAN/"))
+#options(BioC_mirror="http://mirrors.ustc.edu.cn/bioc/")
+#install.packages("Rmisc")
+library(tidyverse)
+library(ggplot2)
+library(ggstatsplot)
+library(survival)
+library(regplot)
+library(rms)
+library(nomogramEx)
+library(timeROC)
+library(ggplotify)
+library(magick)
+library(cowplot)
+library(stringr)
+library(viridis)
+library(forestplot)
+library(scales)
+library(survcomp)
+library(Rmisc)
+library(pROC)
+library(yardstick)
+library(survRM2)
+library(ComparisonSurv)
+library(ggplot2)
+library(ggpubr)
+library(modEvA)
+library(survminer)
+```
+
+## single-cox
+
+```{r}
+realdata <- read.csv("lasso-features.csv", row.names = 1,check.names = F )
+#realdata[1:3,1:6]
+Coxoutput=data.frame()
+for(i in colnames(realdata[,3:ncol(realdata)])){
+  cox <- coxph(Surv(futime, status) ~ realdata[,i], data = realdata)
+  riskscore<-predict(cox,realdata)
+  coxSummary = summary(cox)
+  Coxoutput=rbind(Coxoutput,cbind(gene=i,
+   "HR(95%CI)"=paste0(round(coxSummary$coefficients[,"exp(coef)"],3),"(",round(coxSummary$conf.int[,3],3),"-",round(coxSummary$conf.int[,4],3),")"),
+                                  coef=round(coxSummary$coefficients[,"coef"],3),
+                                  z=round(coxSummary$coefficients[,"z"],3),
+pvalue=ifelse(coxSummary$coefficients[,"Pr(>|z|)"]<0.001,"<0.001",round(coxSummary$coefficients[,"Pr(>|z|)"],3))
+                                  ))
+}
+
+#compute AUC
+Aucoutput=data.frame()
+for(i in colnames(realdata[,3:ncol(realdata)])){
+  ROC<-roc(realdata$status,realdata[,i],ci=T)
+  
+   Aucoutput=rbind(Aucoutput,cbind(gene=i,
+        "AUC(95%CI)"=paste0(round(ROC$ci[2],3),"(",round(ROC$ci[1],3),"-",round(ROC$ci[3],3),")")
+                 ))
+}
+row.names(Aucoutput)<-Aucoutput$gene
+Aucoutput<-Aucoutput[Coxoutput$gene,]
+Coxoutput$`AUC(95%CI)`<-Aucoutput$`AUC(95%CI)`
+
+#####C-index
+Cinoutput=data.frame()
+for(i in colnames(realdata[,3:ncol(realdata)])){
+ cindex<-concordance.index(realdata[,i],
+                                surv.time = realdata$futime,
+                                surv.event = realdata$status,
+                                method = "noether")
+   Cinoutput=rbind(Cinoutput,cbind(gene=i,
+        "C-index(95%CI)"=paste0(round(cindex$c.index,3),"(",round(cindex$lower,3),"-",round(cindex$upper,3),")")
+                 ))
+}
+row.names(Cinoutput)<-Cinoutput$gene
+Cinoutput<-Cinoutput[Coxoutput$gene,]
+Coxoutput$`C-index(95%CI)`<-Cinoutput$`C-index(95%CI)`
+
+
+#save
+write.csv(Coxoutput,'cox_output.csv', row.names = F,quote = F,)
+```
+
+###模型评估（训练集和验证集）
+
+```{r}
+train_set<- read.table("train.txt", row.names = 1, check.names = F, stringsAsFactors = F, header = T,sep = "\t")
+train_set$futime<-train_set$futime/365
+
+test_set<- read.table("test.txt", row.names = 1, check.names = F, stringsAsFactors = F, header = T,sep = "\t")
+test_set$futime<-test_set$futime/365
+all_set<-rbind(train_set,test_set)
+###ROC for class
+
+ROC1<-roc(train_set$status,train_set$ANN,ci=T)
+ROC2<-roc(test_set$status,test_set$ANN,ci=T)
+ROC3<-roc(all_set$status,all_set$ANN,ci=T)
+
+###draw
+npg<-c("#E64B35","#4DBBD5","#00A087")
+pdf("ROC-TESTTRAIN.pdf",width = 5,height = 5)
+train.roc <- plot.roc(ROC1,ylim=c(0,1),xlim=c(1,0),
+                   smooth=F, 
+                   ci=TRUE, 
+                   main="",
+                   col=npg[1],
+                   lwd=2, 
+                   legacy.axes=T,
+                   print.auc = F)
+test.roc <- plot.roc(ROC2,ylim=c(0,1),xlim=c(1,0),
+                   smooth=F, 
+                   ci=TRUE, 
+                   main="",
+                   col=npg[2],
+                   lwd=2, 
+                   legacy.axes=T,
+                   print.auc = F,
+                   add = T)
+all.roc <- plot.roc(ROC3,ylim=c(0,1),xlim=c(1,0),
+                   smooth=F, 
+                   ci=TRUE, 
+                   main="",
+                   col=npg[3],
+                   lwd=2, 
+                   legacy.axes=T,
+                   print.auc = F,
+                   add = T)
+legend.label <- c("AUC(95%CI)",
+                  paste0("Train set: ",round(train.roc$auc,3),"(",round(ROC1$ci[1],3),"-",round(ROC1$ci[3],3),")"),
+                  paste0("Test set: ",round(test.roc$auc,3),"(",round(ROC2$ci[1],3),"-",round(ROC2$ci[3],3),")"),
+                  paste0("Whole set: ",round(all.roc$auc,3),"(",round(ROC3$ci[1],3),"-",round(ROC3$ci[3],3),")")
+                  )
+legend("bottomright", 
+       legend = legend.label,
+       col = c(NA,npg[1:3]),
+       lwd = 2,
+       bty="n")
+invisible(dev.off())
+
+###T-ROC+C-index
+cindex1<-concordance.index(train_set$ANN,
+                                surv.time = train_set$futime,
+                                surv.event = train_set$status,
+                                method = "noether")
+
+cindex2<-concordance.index(test_set$ANN,
+                                surv.time = test_set$futime,
+                                surv.event = test_set$status,
+                                method = "noether")
+cindex3<-concordance.index(all_set$ANN,
+                                surv.time = all_set$futime,
+                                surv.event = all_set$status,
+                                method = "noether")
+###开始画图
+ROC.a <- timeROC(T=train_set$futime, 
+                 delta=train_set$status, marker=train_set$ANN,
+                 cause=1,
+                 weighting="marginal",
+                 times=c(0,0.5,1,1.5,2,2.5,3,3.5,4),
+                 iid=TRUE)
+
+ROC.b <- timeROC(T= test_set$futime, delta= test_set$status, marker=test_set$ANN,
+               cause=1,weighting="marginal",
+               times=c(0,0.5,1,1.5,2,2.5,3,3.5,4),
+               iid=TRUE)
+
+ROC.c <- timeROC(T=all_set$futime, delta=all_set$status,marker=all_set$ANN,
+               cause=1,weighting="marginal",
+               times=c(0,0.5,1,1.5,2,2.5,3,3.5,4),
+               iid=TRUE)
+
+pdf("timeROC.pdf", 6, 5)
+plotAUCcurve(ROC.a, conf.int=F, col=npg[1])
+plotAUCcurve(ROC.b, conf.int=F, col=npg[2], add=TRUE)
+plotAUCcurve(ROC.c, conf.int=F, col=npg[3], add=TRUE)
+# legends
+legend.label <- c("C-index(95%CI)",
+                  paste0("Train set: ",round(cindex1$c.index,3),"(",round(cindex1$lower,3),"-",round(cindex1$upper,3),")"),
+                  paste0("Test set: ",round(cindex2$c.index,3),"(",round(cindex2$lower,3),"-",round(cindex2$upper,3),")"),
+                  paste0("Whole set: ",round(cindex3$c.index,3),"(",round(cindex3$lower,3),"-",round(cindex3$upper,3),")")
+                  )
+legend("topright", 
+       legend = legend.label,
+       col = c(NA,npg[1:3]),
+       lwd = 2,
+       bty="n")
+dev.off()
+
+###HR-MR whole-set
+CUT3D<-as.data.frame(cbind(ROC3$sensitivities,ROC3$specificities,ROC3$thresholds))
+CUT3sen<-CUT3D[10243,]$V3##chose the 95%sens
+CUT3spe<-CUT3D[35383,]$V3 ##chose the 95%spec
+all_set$Riskgroup<-ifelse(all_set$ANN<CUT3sen,"Low Risk",ifelse(all_set$ANN>CUT3spe,"High Risk","Medium Risk"))
+table(all_set$Riskgroup)
+write.table(all_set,"all.txt",row.names = T, quote = F,sep = "\t")
+all_set$Riskgroup<-factor(all_set$Riskgroup,levels=c("High Risk","Medium Risk","Low Risk"))
+survfit<-survfit(Surv(futime,status)~ Riskgroup,data=all_set)
+names(survfit$strata) <- gsub("Riskgroup=", "", names(survfit$strata)) # 去掉亚组名中的riskgroup字样
+p <- suppressWarnings(ggsurvplot(fit               = survfit,
+                                 conf.int          = TRUE,
+                                 conf.int.style="step",
+                                 risk.table        = TRUE,
+                                 risk.table.col    = "strata",
+                                 palette           = npg,
+                                 data              = all_set,
+                                 censor            = TRUE,
+                                 size              = 1.55,
+                                 legend.title      = "",
+                                 pval              = F,
+                                 surv.median.line  = "none",
+                                 xlab              = "Time (Years)",
+                                 ylab              = "Overall survival",
+                                 risk.table.y.text = FALSE)) 
+p$plot <- p$plot + 
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10,colour = "black"),
+        axis.text.y = element_text(colour = "black",size = 10),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "top")
+###get p value
+survdiff1<-survfit(Surv(futime,status)~ Riskgroup,data=subset(all_set,subset=Riskgroup==c("High Risk")))
+survdiff2<-survfit(Surv(futime,status)~ Riskgroup,data=subset(all_set,subset=Riskgroup==c("Medium Risk","Low Risk")))
+print(survdiff1)
+print(survdiff2)
+###output
+pdf("kaplan meier-sub.pdf",width = 6.5,height = 7)
+print(p)
+dev.off()
+
+p1 <- suppressWarnings(ggsurvplot(fit               = survfit,
+                                 conf.int          = TRUE,
+                                 conf.int.style="step",
+                                 risk.table        = TRUE,
+                                 risk.table.col    = "strata",
+                                 palette           = npg,
+                                 data              = all_set,
+                                 censor            = TRUE,
+                                 size              = 1.55,
+                                 legend.title      = "",
+                                 pval              = F,
+                                 fun = "cumhaz",
+                                 surv.median.line  = "none",
+                                 xlab              = "Time (Years)",
+                                 ylab              = "Overall survival",
+                                 risk.table.y.text = FALSE)) 
+p1$plot <- p1$plot + 
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10,colour = "black"),
+        axis.text.y = element_text(colour = "black",size = 10),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "top")
+
+pdf("Cumhaz-sub.pdf",width = 6.5,height = 7)
+print(p1)
+dev.off()
+
+
+###Train_set
+CUT3D<-as.data.frame(cbind(ROC1$sensitivities,ROC1$specificities,ROC1$thresholds))
+CUT3sen<-CUT3D[5001,]$V3
+CUT3spe<-CUT3D[20940,]$V3
+train_set$Riskgroup<-ifelse(train_set$ANN<CUT3sen,"Low Risk",ifelse(train_set$ANN>CUT3spe,"High Risk","Medium Risk"))
+table(train_set$Riskgroup)
+write.table(train_set,"train.txt",row.names = T, quote = F,sep = "\t")
+
+tmp<-data.frame(True=train_set$status,Esti=ifelse(train_set$Riskgroup=="High Risk","1","0"))
+tmp$Esti<-as.numeric(tmp$Esti)
+tmp$True<-factor(tmp$True,levels=c(1,0))
+tmp$Esti<-factor(tmp$Esti,levels=c(1,0))
+ROCHR1<-recall(tmp,True,Esti)
+tmp<-data.frame(True=train_set$status,Esti=ifelse(train_set$Riskgroup==c("High Risk","Medium Risk"),"1","0"))
+tmp$Esti<-as.numeric(tmp$Esti)
+tmp$True<-factor(tmp$True,levels=c(1,0))
+tmp$Esti<-factor(tmp$Esti,levels=c(1,0))
+ROCHRMR1<-recall(tmp,True,Esti)
+
+###Test_set
+CUT3D<-as.data.frame(cbind(ROC2$sensitivities,ROC2$specificities,ROC2$thresholds))
+CUT3sen<-CUT3D[2920,]$V3
+CUT3spe<-CUT3D[16142,]$V3
+test_set$Riskgroup<-ifelse(test_set$ANN<CUT3sen,"Low Risk",ifelse(test_set$ANN>CUT3spe,"High Risk","Medium Risk"))
+table(test_set$Riskgroup)
+write.table(test_set,"test.txt",row.names = T, quote = F,sep = "\t")
+
+tmp<-data.frame(True=test_set$status,Esti=ifelse(test_set$Riskgroup=="High Risk","1","0"))
+tmp$Esti<-as.numeric(tmp$Esti)
+tmp$True<-factor(tmp$True,levels=c(1,0))
+tmp$Esti<-factor(tmp$Esti,levels=c(1,0))
+ROCHR2<-recall(tmp,True,Esti)
+tmp<-data.frame(True=test_set$status,Esti=ifelse(test_set$Riskgroup==c("High Risk","Medium Risk"),"1","0"))
+tmp$Esti<-as.numeric(tmp$Esti)
+tmp$True<-factor(tmp$True,levels=c(1,0))
+tmp$Esti<-factor(tmp$Esti,levels=c(1,0))
+ROCHRMR2<-recall(tmp,True,Esti)
+
+###All_set
+tmp<-data.frame(True=all_set$status,Esti=ifelse(all_set$Riskgroup=="High Risk","1","0"))
+tmp$Esti<-as.numeric(tmp$Esti)
+tmp$True<-factor(tmp$True,levels=c(1,0))
+tmp$Esti<-factor(tmp$Esti,levels=c(1,0))
+ROCHR3<-recall(tmp,True,Esti)
+tmp<-data.frame(True=all_set$status,Esti=ifelse(all_set$Riskgroup==c("High Risk","Medium Risk"),"1","0"))
+tmp$Esti<-as.numeric(tmp$Esti)
+ROCHRMR3<-recall(tmp$True,tmp$Esti,ci=T)
+
+
+Evaluation<-data.frame(
+"No. of Patients(Progression)"=c(paste0(nrow(train_set),"(",nrow(subset(train_set,status==1)),")")
+                                 ,paste0(nrow(test_set),"(",nrow(subset(test_set,status==1)),")")
+                                 ,paste0(nrow(all_set),"(",nrow(subset(all_set,status==1)),")")),
+#####AUC
+  "AUC(95%CI)"=c(paste0(round(ROC1$ci[2],3),"(",round(ROC1$ci[1],3),"-",round(ROC1$ci[3],3),")")
+                ,paste0(round(ROC2$ci[2],3),"(",round(ROC2$ci[1],3),"-",round(ROC2$ci[3],3),")")
+                ,paste0(round(ROC3$ci[2],3),"(",round(ROC3$ci[1],3),"-",round(ROC3$ci[3],3),")")),
+#####C-index  
+"C-index(95%CI)"=c(paste0(round(cindex1$c.index,3),"(",round(cindex1$lower,3),"-",round(cindex1$upper,3),")")
+          ,paste0(round(cindex2$c.index,3),"(",round(cindex2$lower,3),"-",round(cindex2$upper,3),")")
+          ,paste0(round(cindex3$c.index,3),"(",round(cindex3$lower,3),"-",round(cindex3$upper,3),")")),
+#####HR&MR recall(95% CI)
+"HR&MR recall(95% CI)"=c(paste0(round(ROCHRMR1$ci[2],3),"(",round(ROCHRMR1$ci[1],3),"-",round(ROCHRMR1$ci[3],3),")")
+                        ,paste0(round(ROCHRMR2$ci[2],3),"(",round(ROCHRMR2$ci[1],3),"-",round(ROCHRMR2$ci[3],3),")")
+                        ,paste0(round(ROCHRMR3$ci[2],3),"(",round(ROCHRMR3$ci[1],3),"-",round(ROCHRMR3$ci[3],3),")")),
+#####HR recall (95% CI)
+"HR recall(95% CI)"=c(paste0(round(ROCHR1$ci[2],3),"(",round(ROCHR1$ci[1],3),"-",round(ROCHR1$ci[3],3),")")
+                        ,paste0(round(ROCHR2$ci[2],3),"(",round(ROCHR2$ci[1],3),"-",round(ROCHR2$ci[3],3),")")
+                        ,paste0(round(ROCHR3$ci[2],3),"(",round(ROCHR3$ci[1],3),"-",round(ROCHR3$ci[3],3),")"))
+,check.names = F,stringsAsFactors = F
+)
+Evaluation<-t(Evaluation)
+colnames(Evaluation)<-c("Train set","Test set","Whole set")
+write.csv(Evaluation,"Evaluation.csv")
+```
+
+######Model compare (ANN vs Cox)##########
+```{r}
+####计算Cox评分
+pbccox1 <- coxph(formula = Surv(futime,status) ~. , data = train_set[,1:32])
+cox_m1<-step(pbccox1,direction="both")
+train_set$COX<-predict(cox_m1,type="risk",newdata=train_set[,1:32])
+
+pbccox2 <- coxph(formula = Surv(futime,status) ~. , data = test_set[,1:32])
+cox_m2<-step(pbccox2,direction="both")
+test_set$COX<-predict(cox_m2,type="risk",newdata=test_set[,1:32])
+
+pbccox3 <- coxph(formula = Surv(futime,status) ~. , data = all_set[,1:32])
+cox_m3<-step(pbccox3,direction="both")
+all_set$COX<-predict(cox_m3,type="risk",newdata=all_set[,1:32])
+###ROC
+
+ROC1<-roc(all_set$status,all_set$ANN,ci=T)
+ROC2<-roc(all_set$status,all_set$COX,ci=T)
+
+###draw
+npg<-c("#E64B35","#4DBBD5","#00A087")
+pdf("ROC-ANNCOX.pdf",width = 5,height = 5)
+ANN.roc <- plot.roc(ROC1,ylim=c(0,1),xlim=c(1,0),
+                   smooth=F, #绘制平滑曲线
+                   ci=TRUE, 
+                   main="",
+                   col=npg[1],#线的颜色
+                   lwd=2, #线的粗细
+                   legacy.axes=T,
+                   print.auc = F)
+COX.roc <- plot.roc(ROC2,ylim=c(0,1),xlim=c(1,0),
+                   smooth=F, #绘制平滑曲线
+                   ci=TRUE, 
+                   main="",
+                   col=npg[2],#线的颜色
+                   lwd=2, #线的粗细
+                   legacy.axes=T,
+                   print.auc = F,
+                   add = T)
+legend.label <- c("AUC(95%CI)",
+                  paste0("ANN Model: ",round(ROC1$ci[2],3),"(",round(ROC1$ci[1],3),"-",round(ROC1$ci[3],3),")"),
+                  paste0("Cox Model: ",round(ROC2$ci[2],3),"(",round(ROC2$ci[1],3),"-",round(ROC2$ci[3],3),")")
+                  )
+legend("bottomright", 
+       legend = legend.label,
+       col = c(NA,npg[1:2]),
+       lwd = 2,
+       bty="n")
+invisible(dev.off())
+
+###T-ROC+C-index
+cindex1<-concordance.index(all_set$ANN,
+                                surv.time = all_set$futime,
+                                surv.event = all_set$status,
+                                method = "noether")
+
+cindex2<-concordance.index(all_set$COX,
+                                surv.time = all_set$futime,
+                                surv.event = all_set$status,
+                                method = "noether")
+###开始画图
+ROC.a <- timeROC(T=all_set$futime, 
+                 delta=all_set$status, marker=all_set$ANN,
+                 cause=1,
+                 weighting="marginal",
+                 times=c(0,0.5,1,1.5,2,2.5,3,3.5,4),
+                 iid=TRUE)
+
+ROC.b <- timeROC(T= all_set$futime, delta= all_set$status, marker=all_set$COX,
+               cause=1,weighting="marginal",
+               times=c(0,0.5,1,1.5,2,2.5,3,3.5,4),
+               iid=TRUE)
+pdf("timeROC-AC.pdf", 6, 5)
+plotAUCcurve(ROC.a, conf.int=F, col=npg[1])
+plotAUCcurve(ROC.b, conf.int=F, col=npg[2], add=TRUE)
+# 图例设置
+legend.label <- c("C-index(95%CI)",
+                  paste0("ANN Model: ",round(cindex1$c.index,3),"(",round(cindex1$lower,3),"-",round(cindex1$upper,3),")"),
+                  paste0("Cox Model: ",round(cindex2$c.index,3),"(",round(cindex2$lower,3),"-",round(cindex2$upper,3),")")
+                  )
+legend("topright", 
+       legend = legend.label,
+       col = c(NA,npg[1:2]),
+       lwd = 2,
+       bty="n")
+dev.off()
+
+###Table
+###C-index
+cohort.list<-list(train_set,test_set,all_set)
+cresult<-data.frame()
+for(i in cohort.list){
+cindex1<-concordance.index(i$ANN,
+                                surv.time = i$futime,
+                                surv.event = i$status,
+                                method = "noether")
+
+cindex2<-concordance.index(i$COX,
+                                surv.time = i$futime,
+                                surv.event = i$status,
+                                method = "noether")
+pvalue<-cindex.comp(cindex1, cindex2)$p.value
+cresult<-rbind(cresult,cbind(Cohort="C",
+                    Cindexann=round(cindex1$c.index,3),
+                    Cindexcox=round(cindex2$c.index,3),Pvalue=round(pvalue,3))
+                    )
+}
+cresult$Cohort<-c("train_set","test_set","all_set")##
+cresult[is.na(cresult)]<-"<0.001" #correct P value
+
+###AUC
+cohort.list<-list(train_set,test_set,all_set)
+aucresult<-data.frame()
+for(i in cohort.list){
+ROC1<-roc(i$status,i$ANN,ci=T)
+ROC2<-roc(i$status,i$COX,ci=T)
+pvalue<-roc.test(ROC1, ROC2)$p.value
+aucresult<-rbind(aucresult,cbind(Cohort="C",
+                    ROCann=round(ROC1$ci[2],3),
+                    ROCcox=round(ROC2$ci[2],3),Pvalue=round(pvalue,3))
+                    )
+}
+aucresult$Cohort<-c("train_set","test_set","all_set")
+aucresult[is.na(aucresult)]<-"<0.001"
+###偏AUC(关注sensitivity>0.8)
+cohort.list<-list(train_set,test_set,all_set)###
+paucresult<-data.frame()
+for(i in cohort.list){
+ROC1<-roc(i$status,i$ANN,ci=T,partial.auc=c(1, 0.8), partial.auc.correct=TRUE,
+            partial.auc.focus="sens")
+ROC2<-roc(i$status,i$COX,ci=T,partial.auc=c(1, 0.8), partial.auc.correct=TRUE,
+            partial.auc.focus="sens")
+pvalue<-roc.test(ROC1, ROC2)$p.value
+paucresult<-rbind(paucresult,cbind(Cohort="C",
+                    ROCann=round(ROC1$ci[2],3),
+                    ROCcox=round(ROC2$ci[2],3),Pvalue=round(pvalue,3))
+                    )
+}
+paucresult$Cohort<-c("train_set","test_set","all_set")
+paucresult[is.na(paucresult)]<-"<0.001"
+####输出结果
+Modelcomp<-data.frame()
+for(i in c(1,2,3)){
+Modelcomp<-rbind(Modelcomp,rbind("name"=c(cresult[i,]$Cindexcox,paste0(cresult[i,]$Cindexann,"(",cresult[i,]$Pvalue,")")
+                                   ,aucresult[i,]$ROCcox,paste0(aucresult[i,]$ROCann,"(",aucresult[i,]$Pvalue,")")
+                                   ,aucresult[i,]$ROCcox,paste0(aucresult[i,]$ROCann,"(",aucresult[i,]$Pvalue,")")
+  
+)))
+}
+row.names(Modelcomp)<-c("Train Set","Test Set","Whole Set")
+colnames(Modelcomp)<-c("Classic Cox","ANN Cox(p-value)","Classic Cox","ANN Cox(p-value)","Classic Cox","ANN Cox(p-value)")
+write.csv(Modelcomp,"Modelcomp.csv")
+
+###P-R curve
+tmp<-all_set
+tmp$status<-factor(tmp$status,levels = c(1,0))
+PR1<-pr_curve(tmp, status, ANN)
+PRA1<-pr_auc(tmp, status, ANN)$.estimate
+PR2<-pr_curve(tmp, status, COX)
+PRA2<-pr_auc(tmp, status, COX)$.estimate
+C1<-autoplot(PR1)
+plotdata<-rbind(PR1,PR2)
+plotdata$group<-c(rep("ANN",nrow(plotdata)/2),rep("COX",nrow(plotdata)/2))
+
+
+#####ggplot2
+  ggplot(aes(x = recall, y = precision,fill=group,colour=group),data=plotdata)+
+   geom_line(size = 2) +
+    scale_color_manual(values = c( "#E64B35","#4DBBD5")) + 
+    annotate("text", x=0.17, y=0.85, label=paste0("ANN Model(AUC=",round(PRA1,4),")"), colour="#E64B35", size=4)+
+    annotate("text", x=0.17, y=0.84, label=paste0("COX Model(AUC=",round(PRA2,4),")"), colour="#4DBBD5", size=4)+
+    xlab("Recall")+ylab("Precision")+
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10,colour = "black"),
+        axis.text.y = element_text(colour = "black",size = 10),
+        axis.title.x=element_text(colour = "black",size = 15),
+        axis.title.y=element_text(colour = "black",size = 15),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position="none")
+  ggsave("P-R Curve.pdf",width=6,height = 5)
+```
+
+###Subgroup analysis
+
+###subgroup
+```{r}
+input <- read.csv("data-subgroup.csv", header = T)
+head(input)
+dim(input)
+input<-data.frame(input,OS_time_months=input$futime,OS_status=input$status,stringsAsFactors = F)
+input<-input[,-which( colnames(input)=="status" )]
+input<-input[,-which( colnames(input)=="futime" )]
+source("function_subgroup_survival_analysis.R")
+
+data1 <- Subgroup_survival_analysis(pdata = input,
+                           time ="OS_time_months", status = "OS_status",
+                           variable = c("Live", "Gender", "Age", "Ar", "Br", "Cr","BMI"), object ="ANN" )
+data1
+
+
+# count and percentage
+data.count <- rbind(as.data.frame(table(input$Live)), as.data.frame(table(input$Gender)), as.data.frame(table(input$Age)), as.data.frame(table(input$Ar)), as.data.frame(table(input$Br)), as.data.frame(table(input$Cr)), as.data.frame(table(input$BMI)))
+data1$count <- data.count$Freq
+data1$percentage <- round(100 * data.count$Freq/nrow(input))
+data1
+
+#Calculate c-index,auc and HR
+data3 <- getHRandCIfromCoxph(coxphData = coxph(Surv(time = input[,"OS_time_months"],
+                                           event = input[,"OS_status"])~ANN,data = input))
+data3 <- data.frame(data3)
+data3$count <- nrow(input)
+data3$percentage <- "100"
+data3
+
+#combine data
+forestplot_input <- rbind(data3, data1)
+forestplot_input$mean <- (forestplot_input$CI_low_0.95 + forestplot_input$CI_up_0.95)/2
+row.names(forestplot_input)[1] <- "All patient"
+
+# Save
+write.csv(forestplot_input, "subgroup.csv", quote = F)
+
+#P for interaction
+VAR<-"Age"
+cph<-coxph(surv(futime,status)~ANN+Var+ANN*VAR,data=input)
+summary(cph)##collect the interaction p value
+
+data <- read.csv("subgroup.csv")
+head(data)
+dim(data)[1] + 5 
+np <- ifelse(!is.na(data$count), paste(data$count," (",data$percentage,")", sep=""), NA)
+head(np)
+
+#将要在图中展示的文本
+tabletext <- cbind(c("\nSubgroup",NA,NA, data$X, NA),
+                   c("No. of\nPatients (%)", NA, NA, np, NA),
+                   c("Hazard Ratio\n(95% CI)", NA, NA, ifelse(!is.na(data$count), paste(round(data$HR, 2), " (", round(data$CI_low_0.95, 2), " to ", round(data$CI_up_0.95, 2),")", sep=""), NA), NA),
+                   c("P-value", NA, NA, ifelse(data$P < 0.001, "<0.001", round(data$P,3)), NA),
+                    c("P\for interaction", NA, NA, ifelse(data$Pin < 0.001, "<0.001", round(data$Pin,3)), NA))
+tabletext
+
+pdf("subgroup.pdf",width=12,height = 7)
+forestplot(labeltext=tabletext, 
+           mean=c(NA,NA,1,data$HR,NA),#HR
+           lower=c(NA,NA,1,data$CI_low_0.95,NA), 
+           upper=c(NA,NA,1,data$CI_up_0.95,NA),
+           #title="Hazard Ratio",
+           graph.pos=3,
+           graphwidth = unit(.4,"npc"),
+           fn.ci_norm="fpDrawDiamondCI",
+           ##################################################
+           col=fpColors(box="steelblue", lines="black", zero = "black"),
+           boxsize=c(NA,NA,NA,data$percentage,NA)/75,
+           lwd.ci=2,ci.vertices.height = 0.1,ci.vertices=TRUE,
+           zero=1,
+           lwd.zero=2,
+           grid = structure(c(data[1,]$mean), gp = gpar(col = "black", lty=2,lwd=2)),
+           lwd.xaxis=2, 
+           xlab="Hazard Ratio",
+           hrzl_lines=list("3" = gpar(lwd=2, col="black"),
+                           "21" = gpar(lwd=2, col="black")),#nrow(data)+5
+           txt_gp=fpTxtGp(label=gpar(cex=1.25),
+                          ticks=gpar(cex=1.25),
+                          xlab=gpar(cex = 1.25),
+                          title=gpar(cex = 1.25)),
+           lineheight = unit(.75,"cm"),
+           colgap = unit(0,"cm"),
+           mar=unit(rep(1.25, times = 4), "cm"),
+           new_page = F
+           )
+dev.off()
+```
+

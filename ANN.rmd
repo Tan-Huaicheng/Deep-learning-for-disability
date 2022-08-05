@@ -1,0 +1,265 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#library
+
+```{r}
+library(tidyverse)
+library(survivalmodels)
+library(reticulate)
+library(mlr3learners)
+library(data.table)
+library(survival)
+library(mlr3)
+library(mlr3proba)
+library(mlr3verse)
+library(paradox)
+library("mlr3viz")
+library("survival")
+library("survminer")
+Sys.setenv(LANGUAGE = "en") 
+options(stringsAsFactors = FALSE) 
+```
+#load data
+```{r}
+var <- read.table("data-imput.txt",sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+surv <- read.table("data_surv.txt",sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+
+
+whole_set<-data.frame(time=surv$futime,
+                      status=surv$status,
+as.data.frame(t(var[row.names(surv)]),stringsAsFactors = F),
+                     stringsAsFactors = F )
+#外部数据1
+train_set=subset(whole_set,cohort=="2017")
+test_set=subset(whole_set,cohort=="2019")
+```
+
+#Construction ANN model
+```{r}
+n.folds=10#x-fold validation
+nodes.upper=50#max nodes for each layers
+n.inter=100#iteration random search
+
+####
+task <- as_task_surv(train_set,
+                      id = "genes", 
+                      time = "time", 
+                      event = "status",
+                      type = "right")
+print(task)
+head(task$truth())
+###设置参数
+mlr_learners$get("surv.deepsurv")
+learner <- lrn(
+  paste0("surv.", c("deepsurv")),
+  frac = 0.3, 
+  early_stopping = TRUE, 
+  epochs = 1000, ##
+  activation = "relu", # or tanh
+  optimizer = "adam" # or "sgd"
+)
+
+######
+genes <- TaskSurv$new(id = "genes",
+                      backend = train_set,
+                      time = "time",
+                      event = "status",
+                      type = "right")
+######
+#####k=1
+search_space <- ps(
+  ## p_dbl for numeric valued parameters
+  dropout = p_dbl(lower = 0, upper = 1), # Dropout fraction tuned over [0, 1] 
+  weight_decay = p_dbl(lower = 0, upper = 0.5), # Weight decay over [0, 0.5]  
+  learning_rate = p_dbl(lower = 0, upper = 1), # Learning rate over [0, 1]  
+  
+  ## p_int for integer valued parameters
+  nodes1 = p_int(lower = 1, upper = nodes.upper) # Number of nodes in a layer over {1,...,30}  我选了150
+)
+search_space$trafo <- function(x, param_set) {
+  x$num_nodes = x$nodes1 # the number of layers
+  x$nodes1 = NULL
+  return(x)
+}
+#造模
+instance <- TuningInstanceSingleCrit$new(
+  task = genes,
+  learner = learner,
+  search_space = search_space,
+  #resampling = rsmp("holdout"),#rsmp("cv", folds = 3), # 3-fold nested cross-validation
+  resampling = rsmp("cv", folds = n.folds),
+  measure = msr("surv.cindex"),#
+  terminator = trm("evals", n_evals = n.inter) # 60+ iteration random search
+)
+tuner <- tnr("random_search")
+
+tuner$optimize(instance)
+####
+paramertk1=instance$result_learner_param_vals
+cindexk1<-instance$result_y
+resultk1<-instance$archive$data
+
+#####k=2
+search_space <- ps(
+  ## p_dbl for numeric valued parameters
+  dropout = p_dbl(lower = 0, upper = 1), # Dropout fraction tuned over [0, 1] 
+  weight_decay = p_dbl(lower = 0, upper = 0.5), # Weight decay over [0, 0.5]  
+  learning_rate = p_dbl(lower = 0, upper = 1), # Learning rate over [0, 1]  
+  
+  ## p_int for integer valued parameters
+   nodes1 = p_int(lower = 1, upper = nodes.upper), 
+   nodes2 = p_int(lower = 1, upper = nodes.upper) # Number of nodes in a layer
+)
+search_space$trafo <- function(x, param_set) {
+  x$num_nodes = c(x$nodes1, x$nodes2) # the number of layers
+  x$nodes1 = x$nodes2 = NULL
+  return(x)
+}
+#造模
+instance <- TuningInstanceSingleCrit$new(
+  task = genes,
+  learner = learner,
+  search_space = search_space,
+  #resampling = rsmp("holdout"),#rsmp("cv", folds = 3), # 3-fold nested cross-validation
+  resampling = rsmp("cv", folds = n.folds),#
+  measure = msr("surv.cindex"),#Cindex
+  terminator = trm("evals", n_evals = n.inter) # 
+)
+tuner <- tnr("random_search")
+
+tuner$optimize(instance)
+#####
+paramertk2=instance$result_learner_param_vals
+cindexk2<-instance$result_y
+resultk2<-instance$archive$data
+
+#####k=3
+search_space <- ps(
+  ## p_dbl for numeric valued parameters
+  dropout = p_dbl(lower = 0, upper = 1), # Dropout fraction tuned over [0, 1] 
+  weight_decay = p_dbl(lower = 0, upper = 0.5), # Weight decay over [0, 0.5]  
+  learning_rate = p_dbl(lower = 0, upper = 1), # Learning rate over [0, 1]  
+  
+  ## p_int for integer valued parameters
+  nodes1 = p_int(lower = 1, upper = nodes.upper), # Number of nodes in a layer
+  nodes2 = p_int(lower = 1, upper = nodes.upper),
+  nodes3 = p_int(lower = 1, upper = nodes.upper)
+)
+search_space$trafo <- function(x, param_set) {
+  x$num_nodes = c(x$nodes1,x$nodes2,x$nodes3)
+  x$nodes1 = x$nodes2=x$nodes3 = NULL
+  return(x)
+}
+#造模
+instance <- TuningInstanceSingleCrit$new(
+  task = genes,
+  learner = learner,
+  search_space = search_space,
+  #resampling = rsmp("holdout"),
+  resampling = rsmp("cv", folds = n.folds),
+  measure = msr("surv.cindex"),#方法，还有auc等
+  terminator = trm("evals", n_evals = n.inter) # 60+ iteration random search
+)
+tuner <- tnr("random_search")
+#这个代码开始运行模型建模
+tuner$optimize(instance)
+####
+paramertk3=instance$result_learner_param_vals
+cindexk3<-instance$result_y
+resultk3<-instance$archive$data
+
+#####k=4
+search_space <- ps(
+  ## p_dbl for numeric valued parameters
+  dropout = p_dbl(lower = 0, upper = 1), # Dropout fraction tuned over [0, 1] 
+  weight_decay = p_dbl(lower = 0, upper = 0.5), # Weight decay over [0, 0.5]  
+  learning_rate = p_dbl(lower = 0, upper = 1), # Learning rate over [0, 1]  
+  
+  ## p_int for integer valued parameters
+  nodes1 = p_int(lower = 1, upper = nodes.upper), # Number of nodes in a layer over {1,...,30}  我选了150
+  nodes2 = p_int(lower = 1, upper = nodes.upper),
+  nodes3 = p_int(lower = 1, upper = nodes.upper),
+  nodes4 = p_int(lower = 1, upper = nodes.upper)
+)
+search_space$trafo <- function(x, param_set) {
+  x$num_nodes = c(x$nodes1,x$nodes2,x$nodes3,x$nodes4)
+ x$nodes1 = x$nodes2=x$nodes3=x$nodes4= NULL
+  return(x)
+}
+#造模
+instance <- TuningInstanceSingleCrit$new(
+  task = genes,
+  learner = learner,
+  search_space = search_space,
+  #resampling = rsmp("holdout"),#rsmp("cv", folds = 3), # 3-fold nested cross-validation
+  resampling = rsmp("cv", folds = n.folds),#
+  measure = msr("surv.cindex"),
+  terminator = trm("evals", n_evals = n.inter) # 60+ iteration random search
+)
+tuner <- tnr("random_search")
+
+tuner$optimize(instance)
+paramertk4=instance$result_learner_param_vals
+cindexk4<-instance$result_y
+resultk4<-instance$archive$data
+```
+
+#开始输出数据
+```{r}
+## select the optimal values for hyperparameters
+print(c(cindexk1,cindexk2,cindexk3,cindexk4))
+###chose the best parameters
+learner$param_set$values = paramertk3
+
+# train the model using the training data
+
+set.seed(2022)
+np = reticulate::import("numpy")
+np$random$seed(2022L)
+torch = reticulate::import("torch")
+torch$manual_seed(2022L)
+learner$train(task)
+res.pred <- learner$predict(task)
+res.pred$score()
+
+hist(res$crank)
+median(res$crank)
+res <- as.data.table(res.pred)
+
+#output
+riskscore <- data.frame(riskscore = as.numeric(res$crank),
+          row.names = rownames(train_set),
+         futime = train_set$time,
+         status = train_set$status,
+         stringsAsFactors = F)
+
+write.table(riskscore,"train-ann.txt",row.names = T, quote = F,sep = "\t")
+
+#验证集
+task1 <- as_task_surv(test_set,
+                      id = "genes", 
+                      time = "time", 
+                      event = "status",
+                      type = "right")
+
+set.seed(2022)
+np = reticulate::import("numpy")
+np$random$seed(2022L)
+torch = reticulate::import("torch")
+torch$manual_seed(2022L)
+#输出数据
+res.pred <- learner$predict(task1)
+res.pred$score()
+res <- as.data.table(res.pred)
+hist(res$crank)
+median(res$crank)
+riskscore1 <- data.frame(riskscore = as.numeric(res$crank),
+          row.names = rownames(test_set),
+         futime = test_set$time,
+         status = test_set$status,
+         stringsAsFactors = F)
+
+write.table(riskscore1,"test-ann.txt",row.names = T, quote = F,sep = "\t")
+```

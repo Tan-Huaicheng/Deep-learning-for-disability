@@ -1,0 +1,82 @@
+#library
+```{r}
+library(survival)
+library(glmnet)
+library(pbapply)
+library(survival)
+library(survminer)
+library(survcomp)
+library(tidyverse)
+Sys.setenv(LANGUAGE = "en")
+options(stringsAsFactors = FALSE) 
+```
+#display time
+```{r}
+display.progress = function (index, totalN, breakN=20) {
+  
+  if ( index %% ceiling(totalN/breakN)  ==0  ) {
+    cat(paste(round(index*100/totalN), "% ", sep=""))
+  }
+} 
+```
+
+#loaddata
+```{r}
+## 加载训练集表达谱和生存数据
+var <- read.table("data-imput.txt",sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+surv <- read.table("data_input_surv.txt",sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+
+expr.surv <- cbind.data.frame(data.frame("OS" = surv$status,
+                                                  "OS.time" = surv$futime,
+                                        stringsAsFactors = F,
+                                        as.data.frame(t(var[row.names(surv)]))) )
+```
+# repeat lasso
+```{r}
+candidate.var <- intersect(cox.res,km.res)
+# 300 times multivariate cox model with lasso penalty
+iter.times <- 300 #repeat times
+surv.obj <- Surv(expr.surv$OS.time, expr.surv$OS)
+lasso_fea_list <- list()
+
+list.of.seed <- 1:iter.times
+lasso_fea_list <- pblapply(list.of.seed, function(x){ 
+  set.seed(list.of.seed[x])
+  cvfit = cv.glmnet(x = as.matrix(expr.surv[,candidate.var]), 
+                    y = surv.obj, 
+                    nfolds = 10, # 10-fold
+                    alpha = 1, # alpha = 1 
+                    family = "cox", # 
+                    maxit = 1000) 
+  
+  # use lambda.min
+  fea <- rownames(coef(cvfit, s = 'lambda.min'))[coef(cvfit, s = 'lambda.min')[,1]!= 0]
+  if(is.element("(Intercept)", fea)) {
+    lasso_fea <- sort(fea[-1]) 
+  } else {
+    lasso_fea <- sort(fea)
+  }
+  return(lasso_fea)
+})
+save(lasso_fea_list,file = "lasso_fea_list.rda") # save data
+
+# out put var
+lasso_res <- NULL
+for(i in 1:iter.times) {
+  lasso_res <- rbind.data.frame(lasso_res,
+                                data.frame(iteration = i,
+                                           n.gene = length(lasso_fea_list[[i]]),
+                                           genelist = paste0(lasso_fea_list[[i]], collapse = " | "),
+                                           stringsAsFactors = F),
+                                stringsAsFactors = F)
+}
+
+uniquelist <- unique(lasso_res$genelist)
+uniquelab <- LETTERS[1:length(uniquelist)]
+lasso_res$uniquelab <- NA
+for (i in 1:length(uniquelist)) {
+  lasso_res[which(lasso_res$genelist == uniquelist[i]),"uniquelab"] <- uniquelab[i]
+}
+lasso_res$label <- paste(lasso_res$n.gene,"genes",lasso_res$uniquelab,sep = "_") # final vars
+write.table(lasso_res,"lasso_res.txt",row.names = T, quote = F,sep = "\t")
+```
